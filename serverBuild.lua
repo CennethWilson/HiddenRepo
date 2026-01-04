@@ -43,21 +43,60 @@ local normalConveyorInit = normalConveyor:FindFirstChild("Module")
 local directConvTolerance = game.ReplicatedStorage:FindFirstChild("DirectConvTolerance").Value
 
 local buildToMats = {}
+local plotHeight = 2
+
+local Conveyor = {}
+Conveyor.__index = Conveyor
+
+function Conveyor.new(model: Model, inputNode: BasePart, outputNode: BasePart)
+	return setmetatable({
+		Model = model,
+		InputNode = inputNode,
+		OutputNode = outputNode,
+	}, Conveyor)
+end
+
+
+function Conveyor.FromModel(model: Model)
+	return Conveyor.new(
+		model,
+		model:WaitForChild("Input").Value,
+		model:WaitForChild("Output").Value
+	)
+end
+
+function Conveyor:GetModule()
+	return self.Model:FindFirstChild("Module")
+end
+
+function Conveyor:Disconnect()
+	if self.InputNode then
+		self.InputNode.Occupied.Value = nil
+	end
+	if self.OutputNode then
+		self.OutputNode.Occupied.Value = nil
+	end
+end
+
+function Conveyor:Destroy()
+	self:Disconnect()
+	self.Model:Destroy()
+end
 
 --[[
 Gets all unoccupied input and output nodes from a plot,
 used for checking adjacent nodes.
 Nodes that has "Occupied" is skipped
 ]]
-local function getInputOutputNodes(plotBuildingsFold)
+local function getInputOutputNodes(plotBuildingsFold : Folder)
 	local nodes = {
 		["Input"] = {},
 		["Output"] = {}
 	}
 
-	for i, build in pairs(plotBuildingsFold:GetChildren()) do
+	for i, build in ipairs(plotBuildingsFold:GetChildren()) do
 		if build:FindFirstChild("Node") then
-			for i, node in pairs(build:FindFirstChild("Node"):GetChildren()) do
+			for i, node in ipairs(build:FindFirstChild("Node"):GetChildren()) do
 				if node:FindFirstChild("Occupied").Value ~= nil then continue end
 
 				local typ = string.split(node.Name, "_")[1] -- Node name format is "Input_*" or "Output_*"
@@ -74,8 +113,17 @@ Creates conveyor with given input and output nodes.
 If nodes are close enough, construct direct conveyor instead.
 Returns the module (to initialize the conveyor), item slot fold and item slot amount (depending on length)
 ]]
-local function buildConveyor(module, outputNode, inputNode, parent, initModule)
-	local model, cost, slotFold, slotAmt = module.build(outputNode.CFrame, inputNode.CFrame)
+local function buildConveyor(
+	module, 
+	outputNode : BasePart, 
+	inputNode : BasePart,
+	parent : Folder, 
+	initModule : ModuleScript
+)
+	local model, cost, slotFold, slotAmt = module.build(
+		outputNode.CFrame, 
+		inputNode.CFrame
+	)
 	model.Parent = parent
 	
 	outputNode:FindFirstChild("Occupied").Value = model
@@ -91,78 +139,77 @@ local function buildConveyor(module, outputNode, inputNode, parent, initModule)
 	convOutput.Name = "Output"
 	convOutput.Value = inputNode
 	
-	local module = initModule:Clone()
-	module.Parent = model
+	initModule:Clone().Parent = model
 	
-	local isConveyor = Instance.new("BoolValue")
-	isConveyor.Parent = model
-	isConveyor.Name = "IsConveyor"
+	Instance.new("BoolValue", model).Name = "IsConveyor"
 	
 	if (outputNode.Position - inputNode.Position).Magnitude <= directConvTolerance then -- Direct conveyor checks
-		local isDirectConv = Instance.new("BoolValue")
-		isDirectConv.Name = "IsDirectConv"
-		isDirectConv.Parent = model
+		Instance.new("BoolValue", model).Name = "IsDirectConv"
 	end
 	
-	return module, slotFold, slotAmt
+	local conveyorObject = Conveyor.new(model, inputNode, outputNode)
+	return conveyorObject, slotFold, slotAmt
 end
 
-local oppositeTab = {
-	["Input"] = "Output",
-	["Output"] = "Input"
-}
+local oppositeTab = {Input = "Output", Output = "Input"}
 
 --[[
 Scans for nearby opposite nodes. If there is one directly in front, connects them with direct conveyor.
 ]]
-local function checkAdjacentNodes(nodesFold, parent)
-	local module = nodesFold.Parent:FindFirstChild("Module")
+local function checkAdjacentNodes(
+	nodesFold : Folder, 
+	parent : Folder
+)
 	local nodes = getInputOutputNodes(parent)
 	
-	local convModules = {}
+	local convObjects = {}
 	
-	for i, node in pairs(nodesFold:GetChildren()) do
+	for i, node in ipairs(nodesFold:GetChildren()) do
 		local typ = string.split(node.Name, "_")[1]
-		local pos = node.Position
-
-		for i, targetNode in pairs(nodes[oppositeTab[typ]]) do -- Looks for in opposite node type
-			local dist = (pos - targetNode.Position).Magnitude
-			if dist <= directConvTolerance then
-				local targetModule = targetNode.Parent.Parent:FindFirstChild("Module")
-
-				local inputNode, outputNode
-				if typ == "Input" then
-					inputNode = node
-					outputNode = targetNode
-				else
-					inputNode = targetNode
-					outputNode = node
-				end
+		
+		print(nodes)
+		for i, targetNode in ipairs(nodes[oppositeTab[typ]]) do -- Looks for in opposite node type
+			if (node.Position - targetNode.Position).Magnitude <= directConvTolerance then
+				local inputNode = (typ == "Input") and node or targetNode
+				local outputNode = (typ == "Output") and targetNode or node
 				
-				local convModule = buildConveyor(normalConveyorBuilder, outputNode, inputNode, parent, normalConveyorInit)
-				table.insert(convModules, convModule) -- Module will be run for initialization later on
+				local convObj = buildConveyor(
+					normalConveyorBuilder, 
+					outputNode, 
+					inputNode, 
+					parent, 
+					normalConveyorInit
+				)
+				
+				table.insert(convObjects, convObj) -- Module will be run for initialization later on
 				break -- Stops after finding match
 			end
 		end
 	end
 	
-	return convModules
+	return convObjects
 end
 
 --[[
 Clones and position building in player plot, returns the model
 ]]
-local function placeBuild(buildModel, plotBuildingsFold, xPos, zPos, rot)
+local function placeBuild(
+	buildModel : Model, 
+	plotBuildingsFold : Folder, 
+	xPos : number, 
+	zPos : number, 
+	rot : number
+)
 	local model = buildModel:Clone()
 	model.Parent = plotBuildingsFold
 	
-	local yPos = 2 + model.PrimaryPart.Size.Y/2
+	local yPos = plotHeight + model.PrimaryPart.Size.Y/2
 
 	model:PivotTo(CFrame.new(xPos, yPos, zPos) * CFrame.Angles(0, math.rad(rot), 0))
 	
 	if model:FindFirstChild("TempWeld") then -- Unwelds animation parts (fans, drills, etc)
-		delay(1, function()
-			for i, weldVal in pairs(model:FindFirstChild("TempWeld"):GetChildren()) do
+		task.delay(1, function()
+			for i, weldVal in ipairs(model:FindFirstChild("TempWeld"):GetChildren()) do
 				weldVal.Value.Parent.Anchored = true
 				weldVal.Value:Destroy()
 			end
@@ -198,8 +245,14 @@ Checks:
 
 Also constructs a direct conveyor if the building node is adjacent to other node
 ]]
-placeBuildRemote.OnServerInvoke = function(plr, val, xPos, zPos, rot)
-	if not (val:IsA("BoolValue") and val:IsDescendantOf(buildLibFold)) then return false end
+placeBuildRemote.OnServerInvoke = function(
+	plr : Player, 
+	val : BoolValue, 
+	xPos : number, 
+	zPos : number, 
+	rot : number
+)
+	if not val:IsDescendantOf(buildLibFold) then return false end
 
 	local researchReq = val:GetAttribute("ResearchReq")
 	local plrResearchFold = plr:FindFirstChild("Research")
@@ -227,7 +280,7 @@ placeBuildRemote.OnServerInvoke = function(plr, val, xPos, zPos, rot)
 	if not hasMaterial.check(plr, hasMaterial.valToTab(val)) then return false end
 
 	local plrItems = plr:FindFirstChild("Items")
-	for i, mat in pairs(val:FindFirstChild("Materials"):GetChildren()) do
+	for i, mat in ipairs(val:FindFirstChild("Materials"):GetChildren()) do
 		local plrVal = plrItems:FindFirstChild(mat.Name)
 		plrVal.Value -= mat.Value
 	end
@@ -236,22 +289,19 @@ placeBuildRemote.OnServerInvoke = function(plr, val, xPos, zPos, rot)
 	local plotBuildingsFold = plot:FindFirstChild("Buildings")
 
 	local model = placeBuild(buildModel, plotBuildingsFold, xPos, zPos, rot)
-	
 	local serial = getSerial(plot:FindFirstChild("Serials"))
 	
-	local serialVal = Instance.new("BoolValue") -- Serial used for saving / loading conveyor purposes
-	serialVal.Name = serial
-	serialVal.Parent = plot:FindFirstChild("Serials")
+	Instance.new("BoolValue", plot:FindFirstChild("Serials")).Name = serial -- Serial used for saving / loading conveyor purposes
 	
 	model.Name = model.Name .. "_" .. serial
 	
-	local conveyorModules -- Direct conveyor modules, exists if there is adjacent opposite nodes
+	local conveyorObjects -- Direct conveyor modules, exists if there is adjacent opposite nodes
 	if model:FindFirstChild("Node") then
-		conveyorModules = checkAdjacentNodes(model:FindFirstChild("Node"), plotBuildingsFold)
+		conveyorObjects = checkAdjacentNodes(model:FindFirstChild("Node"), plotBuildingsFold)
 	end
 
 	local module = model:FindFirstChild("Module") -- Module used for initialization
-	return module, conveyorModules
+	return module, conveyorObjects
 end
 
 loadBuildRemote.OnInvoke = placeBuild
@@ -289,7 +339,7 @@ placeConveyorRemote.OnServerInvoke = function(plr, val, outputNode, inputNode)
 	if not hasMaterial.check(plr, cost) then return false end
 	
 	local plrItems = plr:FindFirstChild("Items")
-	for matName, matAmt in pairs(cost) do
+	for matName, matAmt in ipairs(cost) do
 		local plrVal = plrItems:FindFirstChild(matName)
 		plrVal.Value -= matAmt
 	end
@@ -297,8 +347,10 @@ placeConveyorRemote.OnServerInvoke = function(plr, val, outputNode, inputNode)
 	local plot = plr:FindFirstChild("Plot").Value
 	local plotBuildingsFold = plot:FindFirstChild("Buildings")
 	
-	local module, slotFold, slotAmt = buildConveyor(module, outputNode, inputNode, plotBuildingsFold, buildModel:FindFirstChild("Module"))
-	return module, slotFold, slotAmt
+	local convObj, slotFold, slotAmt = buildConveyor(module, outputNode, inputNode, plotBuildingsFold, buildModel:FindFirstChild("Module"))
+	local convModule = convObj:GetModule()
+	print(convModule)
+	return convModule, slotFold, slotAmt
 end
 
 loadConveyorRemote.OnInvoke = buildConveyor
@@ -314,7 +366,7 @@ end)
 
 local function refundMats(plr, mats)
 	local plrInventory = plr:FindFirstChild("Items")
-	for matName, matVal in pairs(mats) do
+	for matName, matVal in ipairs(mats) do
 		if not plrInventory:FindFirstChild(matName) then
 			local val = Instance.new("IntValue")
 			val.Name = matName
@@ -341,7 +393,7 @@ local function deleteBuild(plr, build)
 	if not build:FindFirstChild("IsConveyor") then -- Handles building
 		local nodeFold = build:FindFirstChild("Node")
 		if nodeFold then
-			for i, node in pairs(nodeFold:GetChildren()) do
+			for i, node in ipairs(nodeFold:GetChildren()) do
 				local conv = node:FindFirstChild("Occupied").Value
 				if conv and conv:FindFirstChild("IsDirectConv") == nil then -- Prevents deletion if conveyor is still atached (not direct coneyor)
 					return false
@@ -352,7 +404,7 @@ local function deleteBuild(plr, build)
 		local mats = buildToMats[string.split(build.Name, "_")[1]]
 
 		if nodeFold then
-			for i, node in pairs(nodeFold:GetChildren()) do
+			for i, node in ipairs(nodeFold:GetChildren()) do
 				local conv = node:FindFirstChild("Occupied").Value
 				if conv then
 					deleteBuild(plr, conv)
@@ -364,16 +416,12 @@ local function deleteBuild(plr, build)
 		refundMats(plr, mats)
 		
 	else -- Handles conveyor
-		local inputNode = build:FindFirstChild("Input").Value
-		inputNode.Occupied.Value = nil
-
-		local outputNode = build:FindFirstChild("Output").Value
-		outputNode.Occupied.Value = nil
-
-		local convModule = require(buildingFold:FindFirstChild(build.Name):FindFirstChild("Builder"))
-		local mats = convModule.getCost(build:FindFirstChild("Length").Value) -- Get the original cost
-
-		build:Destroy()
+		local conveyor = Conveyor.FromModel(build)
+		
+		local builder = require(buildingFold[build.Name].Builder)
+		local mats = builder.getCost(build:FindFirstChild("Length").Value) -- Get the original cost
+		
+		conveyor:Destroy()
 		refundMats(plr, mats)
 	end
 end
@@ -383,11 +431,11 @@ deleteBuildRemote.OnServerEvent:Connect(deleteBuild)
 --[[
 Cache build materials at startup
 ]]
-for i, category in pairs(buildLibFold:GetChildren()) do
-	for i, buildVal in pairs(category:GetChildren()) do
+for i, category in ipairs(buildLibFold:GetChildren()) do
+	for i, buildVal in ipairs(category:GetChildren()) do
 		if buildVal:FindFirstChild("IsConveyor") then continue end
 		local mats = {}
-		for i, matVal in pairs(buildVal:FindFirstChild("Materials"):GetChildren()) do
+		for i, matVal in ipairs(buildVal:FindFirstChild("Materials"):GetChildren()) do
 			mats[matVal.Name] = matVal.Value
 		end
 		buildToMats[buildVal.Name] = mats
